@@ -1,0 +1,2 @@
+# hz (the humanizer pipeline), pinned: ui/app.py uses its internals
+humanize-model[docx] @ git+https://github.com/sgaofen/humanizer-local-model@7dd4be90cb3acb2e5d18aeea5837f888d2bb2d52

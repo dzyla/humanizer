@@ -1,0 +1,54 @@
+# Words the spelling check accepts. One per line; case matters for names (GenBank), not for lowercase words.
+# Words that appear in your draft are always accepted.
+lysed
+lysate
+lysates
+lysing
+resuspended
+resuspend
+pelleted
+pelleting
+centrifuged
+sonicated
+transfected
+transfection
+transduced
+electroporated
+immunoblot
+immunoblotting
+immunoprecipitated
+immunoprecipitation
+plasmid
+plasmids
+amplicon
+amplicons
+oligo
+oligos
+mutagenesis
+miniprep
+midiprep
+cryo-EM
+cryo-ET
+micrograph
+micrographs
+interactome
+proteome
+proteomic
+proteomics
+transcriptomic
+transcriptomics
+knockdown
+knockout
+siRNA
+shRNA
+sgRNA
+CRISPR
+qPCR
+RT-qPCR
+ELISA
+SDS-PAGE
+FACS
+HEK293T
+HeLa
+in vitro
+in vivo

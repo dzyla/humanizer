@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Humanizer</title>
+<style>
+  :root {
+    --bg: #f6f6f3; --panel: #ffffff; --ink: #1d1f22; --muted: #6b7078; --line: #dcdcd6;
+    --accent: #3b5bdb; --ins-bg: #d9f2d0; --ins-ink: #1f5f12; --del-ink: #a33a3a; --warn: #9a6200; --warn-bg: #fff4dc;
+    --gi: #d9480f; --sp: #7048e8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141518; --panel: #1c1e22; --ink: #e6e6e3; --muted: #959aa3; --line: #30333a;
+      --accent: #7c95ff; --ins-bg: #23401c; --ins-ink: #b9eaa6; --del-ink: #f08e8e; --warn: #f0c060; --warn-bg: #3a2f17;
+      --gi: #ff8a50; --sp: #b197fc;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--ink); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+         display: flex; flex-direction: column; }
+  header { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0 12px 0 0; font-weight: 650; }
+  button, label.btn { font: inherit; font-size: 14px; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--line);
+                      background: var(--panel); color: var(--ink); cursor: pointer; }
+  button:hover, label.btn:hover { border-color: var(--muted); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  .spacer { flex: 1; }
+  .toggle { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--muted); }
+  main { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 12px 16px; min-height: 0; }
+  .pane { display: flex; flex-direction: column; min-height: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+  .pane .head { display: flex; justify-content: space-between; padding: 8px 14px; border-bottom: 1px solid var(--line);
+                font-size: 13px; color: var(--muted); }
+  .pane .head b { color: var(--ink); font-weight: 600; }
+  #draft, #out { flex: 1; overflow: auto; padding: 14px; margin: 0; font: 16px/1.65 Georgia, "Iowan Old Style", serif; color: var(--ink); }
+  #draft { border: 0; resize: none; background: transparent; outline: none; }
+  #out { white-space: pre-wrap; word-wrap: break-word; }
+  #out:empty::before { content: "The rewrite appears here."; color: var(--muted); }
+  #out.pending { color: var(--muted); }
+  ins { background: var(--ins-bg); color: var(--ins-ink); text-decoration: none; border-radius: 2px; }
+  del { color: var(--del-ink); opacity: .75; }
+  #out.clean del { display: none; }
+  #out.clean ins { background: none; color: inherit; }
+  #flags { margin: 0; padding: 8px 14px; border-top: 1px solid var(--line); font-size: 13px; background: var(--warn-bg);
+           color: var(--warn); max-height: 25%; overflow: auto; }
+  #flags:empty, #fixed:empty { display: none; }
+  #fixed { padding: 8px 14px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); max-height: 20%; overflow: auto; }
+  mark.gi { background: none; color: inherit; cursor: pointer; text-decoration: underline wavy var(--gi); text-underline-offset: 3px; }
+  mark.gi.sp { --gi: var(--sp); }
+  .gcount { color: var(--gi); font-weight: 600; }
+  #pop { position: fixed; z-index: 10; max-width: 340px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+         padding: 10px 12px; box-shadow: 0 6px 24px rgba(0,0,0,.18); font-size: 14px; }
+  #pop[hidden] { display: none; }
+  #preps { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  #preps button { padding: 3px 9px; font-weight: 600; }
+  #preps button.ghost { font-weight: 400; color: var(--muted); }
+  #flags div + div { margin-top: 4px; }
+  footer { display: flex; gap: 16px; padding: 6px 16px 10px; font-size: 13px; color: var(--muted); flex-wrap: wrap; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-right: 6px; }
+  .dot.up { background: #3aa655; } .dot.down { background: #d04545; }
+  @media (max-width: 760px) { main { grid-template-columns: 1fr; grid-auto-rows: minmax(260px, 1fr); } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Humanizer</h1>
+  <button id="go" class="primary" title="Ctrl+Enter">Rewrite</button>
+  <button id="stop" disabled>Stop</button>
+  <label class="btn">Import file<input id="file" type="file" accept=".txt,.md,.markdown,.docx" hidden></label>
+  <span class="spacer"></span>
+  <label class="toggle" title="Apply LanguageTool's grammar, punctuation and capitalization fixes automatically"><input id="auto" type="checkbox" checked> Auto-correct</label>
+  <button id="check">Check grammar</button>
+  <label class="toggle"><input id="marks" type="checkbox" checked> Show changes</label>
+  <label class="toggle"><input id="sync" type="checkbox" checked> Sync scroll</label>
+  <button id="copy">Copy rewrite</button>
+  <button id="save">Download</button>
+</header>
+<main>
+  <section class="pane">
+    <div class="head"><b>Draft</b><span id="din">0 words</span></div>
+    <textarea id="draft" spellcheck="false" placeholder="Paste a draft here, or import a .txt, .md or .docx file."></textarea>
+  </section>
+  <section class="pane">
+    <div class="head"><b>Rewrite</b><span><span id="gcount" class="gcount"></span> <span id="dout">0 words</span></span></div>
+    <div id="out"></div>
+    <div id="fixed"></div>
+    <div id="flags"></div>
+  </section>
+</main>
+<div id="pop" hidden><div id="pmsg"></div><div id="preps"></div></div>
+<footer>
+  <span><span id="dot" class="dot"></span><span id="srv">checking model server…</span></span>
+  <span><span id="ltdot" class="dot"></span><span id="ltsrv">checking LanguageTool…</span></span>
+  <span id="status"></span>
+</footer>
+<script>
+const $ = id => document.getElementById(id);
+const draft = $('draft'), out = $('out');
+let rewrite = '', ctrl = null, t0 = 0, timer = null;
+
+const words = s => (s.match(/\S+/g) || []).length;
+const esc = s => s.replace(/[&<>]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c]));
+const norm = w => w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '') || w;
+
+try { draft.value = localStorage.getItem('hz-draft') || ''; } catch (e) {}
+draft.addEventListener('input', () => {
+  $('din').textContent = words(draft.value) + ' words';
+  try { localStorage.setItem('hz-draft', draft.value); } catch (e) {}
+});
+$('din').textContent = words(draft.value) + ' words';
+
+// Word-level diff of the rewrite against the draft: which characters of the rewrite are new, and
+// which dropped draft words go before which rewrite position.
+function diffMarks(a, b) {
+  const insAt = new Uint8Array(b.length), dels = new Map();
+  const A = a.match(/\S+/g) || [];
+  const toks = [...b.matchAll(/\s*(\S+)/g)];
+  const B = toks.map(t => t[1]);
+  const n = A.length, m = B.length;
+  if (!n || !m || n * m > 4e7) return {insAt, dels};
+  const na = A.map(norm), nb = B.map(norm);
+  // LCS lengths, suffix form, rolled into a direction table to walk forwards
+  const dir = new Uint8Array((n + 1) * (m + 1));
+  let next = new Int32Array(m + 1), cur = new Int32Array(m + 1);
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      if (na[i] === nb[j]) { cur[j] = next[j + 1] + 1; dir[i * (m + 1) + j] = 0; }
+      else if (next[j] >= cur[j + 1]) { cur[j] = next[j]; dir[i * (m + 1) + j] = 1; }
+      else { cur[j] = cur[j + 1]; dir[i * (m + 1) + j] = 2; }
+    }
+    [next, cur] = [cur, next];
+  }
+  let i = 0, j = 0, pend = [], prevIns = false;
+  const putDel = p => { if (pend.length) { dels.set(p, pend.join(' ')); pend = []; } };
+  while (j < m) {
+    const d = i < n ? dir[i * (m + 1) + j] : 2;
+    if (d === 1) { pend.push(A[i++]); prevIns = false; continue; }
+    const t = toks[j], word = t.index + t[0].length - t[1].length;
+    putDel(t.index);
+    if (d === 0) { i++; prevIns = false; }
+    else { insAt.fill(1, prevIns ? t.index : word, t.index + t[0].length); prevIns = true; }
+    j++;
+  }
+  while (i < n) pend.push(A[i++]);
+  putDel(b.length);
+  return {insAt, dels};
+}
+
+// Rewrite as HTML: new words <ins>, dropped words <del>, grammar issues <mark class="gi">.
+function renderOut(a, b, list) {
+  const {insAt, dels} = diffMarks(a, b);
+  const iss = new Int32Array(b.length).fill(-1);
+  list.forEach((x, k) => iss.fill(k, x.offset, x.offset + x.length));
+  let html = '', s = 0;
+  const run = e => {
+    if (e <= s) return;
+    let t = esc(b.slice(s, e));
+    if (insAt[s]) t = '<ins>' + t + '</ins>';
+    if (iss[s] >= 0) t = `<mark class="gi${list[iss[s]].category === 'TYPOS' ? ' sp' : ''}" data-i="${iss[s]}">${t}</mark>`;
+    html += t; s = e;
+  };
+  for (let p = 0; p <= b.length; p++) {
+    if (dels.has(p)) {   // dropped words go before the next rewrite word, with a space on each side
+      run(p);
+      html += (p && !/\s/.test(b[p - 1]) ? ' ' : '') + '<del>' + esc(dels.get(p)) + '</del>'
+              + (p < b.length && !/\s/.test(b[p]) ? ' ' : '');
+    }
+    if (p === b.length) run(p);
+    else if (p > s && (insAt[p] !== insAt[s] || iss[p] !== iss[s])) run(p);
+  }
+  return html;
+}
+
+function show(text, pending) {
+  rewrite = text;
+  out.innerHTML = renderOut(draft.value, text, issues);
+  out.classList.toggle('pending', !!pending);
+  $('dout').textContent = words(text) + ' words';
+  $('gcount').textContent = issues.length ? `${issues.length} to review` : '';
+}
+
+// ── grammar (LanguageTool) ─────────────────────────────────────────────────────────────────
+let issues = [], fixed = [];
+
+function applyFix(k, rep) {
+  const x = issues[k], d = rep.length - x.length, end = x.offset + x.length;
+  fixed.push(rewrite.slice(x.offset, end) + ' → ' + rep);
+  rewrite = rewrite.slice(0, x.offset) + rep + rewrite.slice(end);
+  issues = issues.filter((y, q) => q !== k && (y.offset >= end || y.offset + y.length <= x.offset))
+                 .map(y => y.offset >= end ? {...y, offset: y.offset + d} : y);
+}
+
+async function checkGrammar(text) {
+  const r = await fetch('/api/check', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                       body: JSON.stringify({text, draft: draft.value})});
+  const d = await r.json();
+  return d.available ? d.issues : null;
+}
+
+// Apply the safe fixes (grammar, punctuation, casing), check again, up to three rounds.
+async function autoCorrect(list) {
+  for (let round = 0; round < 3; round++) {
+    issues = list;
+    const auto = issues.map((x, k) => [x, k]).filter(([x]) => x.auto).sort((p, q) => q[0].offset - p[0].offset);
+    if (!auto.length || !$('auto').checked) return;
+    let lastStart = Infinity;
+    for (const [x] of auto) {   // from the end, so earlier offsets stay valid
+      const k = issues.indexOf(x);
+      if (k < 0 || x.offset + x.length > lastStart) continue;
+      applyFix(k, x.replacements[0]);
+      lastStart = x.offset;
+    }
+    list = await checkGrammar(rewrite);
+    if (!list) { issues = []; return; }
+  }
+  issues = list;
+}
+
+function showFixed() {
+  $('fixed').innerHTML = fixed.length
+    ? `<b>Auto-corrected ${fixed.length}:</b> ` + fixed.map(f => `<span>${esc(f)}</span>`).join(' · ') : '';
+}
+
+async function runCheck() {
+  if (!rewrite) return;
+  setStatus('Checking grammar…');
+  const list = await checkGrammar(rewrite);
+  if (!list) { setStatus('LanguageTool is not running; start it with ./start-languagetool.sh'); return; }
+  await autoCorrect(list);
+  show(rewrite); showFixed();
+  setStatus(`Grammar: ${fixed.length} auto-corrected, ${issues.length} to review`);
+}
+
+const pop = $('pop');
+out.addEventListener('click', e => {
+  const mk = e.target.closest('mark.gi');
+  if (!mk) return;
+  const k = +mk.dataset.i, x = issues[k];
+  $('pmsg').textContent = x.message;
+  $('preps').innerHTML = '';
+  for (const rep of x.replacements) {
+    const b = document.createElement('button');
+    b.textContent = rep === '' ? '(delete)' : rep;
+    b.onclick = () => { applyFix(k, rep); pop.hidden = true; show(rewrite); showFixed(); };
+    $('preps').append(b);
+  }
+  const ig = document.createElement('button');
+  ig.textContent = 'Ignore'; ig.className = 'ghost';
+  ig.onclick = () => { issues.splice(k, 1); pop.hidden = true; show(rewrite); };
+  $('preps').append(ig);
+  const r = mk.getBoundingClientRect();
+  pop.hidden = false;
+  pop.style.left = Math.max(8, Math.min(r.left, innerWidth - pop.offsetWidth - 8)) + 'px';
+  pop.style.top = (r.bottom + 6 + pop.offsetHeight > innerHeight ? r.top - pop.offsetHeight - 6 : r.bottom + 6) + 'px';
+  e.stopPropagation();
+});
+document.addEventListener('click', e => { if (!pop.contains(e.target)) pop.hidden = true; });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') pop.hidden = true; });
+out.addEventListener('scroll', () => pop.hidden = true);
+
+function setStatus(s) { $('status').textContent = s; }
+function busy(on) {
+  $('go').disabled = on; $('stop').disabled = !on; draft.readOnly = on;
+  clearInterval(timer);
+  if (on) { t0 = Date.now(); timer = setInterval(tick, 500); }
+}
+let progress = '';
+function tick() { setStatus(progress + ' · ' + ((Date.now() - t0) / 1000).toFixed(0) + ' s'); }
+
+async function run() {
+  const text = draft.value;
+  if (!text.trim()) return;
+  ctrl = new AbortController();
+  $('flags').innerHTML = ''; $('fixed').innerHTML = '';
+  out.textContent = ''; rewrite = ''; issues = []; fixed = [];
+  progress = 'starting'; busy(true); tick();
+  try {
+    const r = await fetch('/api/rewrite', {method: 'POST', body: JSON.stringify({text}), signal: ctrl.signal,
+                                           headers: {'Content-Type': 'application/json'}});
+    if (!r.ok) throw new Error((await r.json()).error || r.statusText);
+    const reader = r.body.getReader(), dec = new TextDecoder();
+    let buf = '';
+    for (;;) {
+      const {value, done} = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, {stream: true});
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) { handle(JSON.parse(buf.slice(0, nl))); buf = buf.slice(nl + 1); }
+    }
+  } catch (e) {
+    if (e.name !== 'AbortError') { busy(false); setStatus('Error: ' + e.message); return; }
+    setStatus('Stopped. Pieces finished so far are kept.');
+  }
+  busy(false);
+}
+
+function handle(ev) {
+  if (ev.type === 'plan') {
+    progress = ev.pieces ? `rewriting ${ev.pieces} piece${ev.pieces > 1 ? 's' : ''}` : 'nothing to rewrite';
+    show(draft.value, true);
+  } else if (ev.type === 'progress') {
+    progress = `piece ${ev.k}/${ev.total}`;
+  } else if (ev.type === 'piece') {
+    show(ev.text, ev.k < ev.total);
+  } else if (ev.type === 'checking') {
+    progress = 'checking grammar';
+  } else if (ev.type === 'done') {
+    rewrite = ev.text;
+    $('flags').innerHTML = ev.flags.map(f =>
+      `<div><b>Line ${f.line}</b> (“${esc(f.start)}…”): ${esc(f.note)}</div>`).join('');
+    const finish = () => {
+      show(rewrite, false); showFixed(); busy(false);
+      setStatus(`Done in ${ev.seconds} s · ${ev.pieces} piece(s) · copies ${(ev.copy_rate * 100).toFixed(0)}% of the draft`
+                + (ev.flags.length ? ` · ${ev.flags.length} piece(s) to check` : '')
+                + (ev.lt ? ` · grammar: ${fixed.length} auto-corrected, ${issues.length} to review`
+                         : ' · grammar check off (LanguageTool not running)'));
+    };
+    autoCorrect(ev.issues).then(finish, finish);
+  } else if (ev.type === 'error') {
+    busy(false); setStatus('Error: ' + ev.error);
+  }
+}
+
+$('go').onclick = run;
+$('check').onclick = () => { fixed = []; runCheck(); };
+$('stop').onclick = () => ctrl && ctrl.abort();
+document.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !$('go').disabled) run(); });
+$('marks').onchange = e => out.classList.toggle('clean', !e.target.checked);
+
+$('copy').onclick = async () => {
+  if (!rewrite) return;
+  await navigator.clipboard.writeText(rewrite);
+  $('copy').textContent = 'Copied'; setTimeout(() => $('copy').textContent = 'Copy rewrite', 1200);
+};
+$('save').onclick = () => {
+  if (!rewrite) return;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([rewrite], {type: 'text/plain'}));
+  a.download = 'rewrite.txt'; a.click(); URL.revokeObjectURL(a.href);
+};
+
+$('file').onchange = async e => {
+  const f = e.target.files[0]; e.target.value = '';
+  if (!f) return;
+  let text;
+  if (/\.docx$/i.test(f.name)) {
+    const r = await fetch('/api/import', {method: 'POST', body: await f.arrayBuffer()});
+    const d = await r.json();
+    if (!r.ok) return setStatus(d.error);
+    text = d.text;
+  } else text = await f.text();
+  draft.value = text; draft.dispatchEvent(new Event('input'));
+  setStatus('Imported ' + f.name);
+};
+
+// proportional scroll sync between the panes
+let syncing = false;
+function syncFrom(src, dst) {
+  if (!$('sync').checked || syncing) return;
+  syncing = true;
+  const p = src.scrollTop / Math.max(1, src.scrollHeight - src.clientHeight);
+  dst.scrollTop = p * (dst.scrollHeight - dst.clientHeight);
+  requestAnimationFrame(() => syncing = false);
+}
+draft.addEventListener('scroll', () => syncFrom(draft, out));
+out.addEventListener('scroll', () => syncFrom(out, draft));
+
+async function health() {
+  try {
+    const d = await (await fetch('/api/health')).json();
+    $('dot').className = 'dot ' + (d.up ? 'up' : 'down');
+    $('srv').textContent = (d.up ? 'model server ready' : 'model server not running') + ' (' + d.server + ')';
+    $('ltdot').className = 'dot ' + (d.lt_up ? 'up' : 'down');
+    $('ltsrv').textContent = d.lt_up ? 'LanguageTool ready' : 'LanguageTool not running (grammar check off)';
+  } catch (e) { $('dot').className = 'dot down'; $('srv').textContent = 'UI server not reachable'; }
+}
+health(); setInterval(health, 10000);
+</script>
+</body>
+</html>

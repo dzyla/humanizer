@@ -1,0 +1,6 @@
+# local environment, model weights and downloaded tools (see README for how to get them)
+.venv/
+humanizer-model/
+tools/
+*.log
+__pycache__/
