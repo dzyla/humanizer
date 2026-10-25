@@ -8,13 +8,13 @@
   :root {
     --bg: #f6f6f3; --panel: #ffffff; --ink: #1d1f22; --muted: #6b7078; --line: #dcdcd6;
     --accent: #3b5bdb; --ins-bg: #d9f2d0; --ins-ink: #1f5f12; --del-ink: #a33a3a; --warn: #9a6200; --warn-bg: #fff4dc;
-    --gi: #d9480f; --sp: #7048e8;
+    --gi: #d9480f; --sp: #7048e8; --fix-bg: #dbe8ff; --fix-ink: #1c4f9c; --redo-bg: #fff1c2; --redo-line: #d9a400;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #141518; --panel: #1c1e22; --ink: #e6e6e3; --muted: #959aa3; --line: #30333a;
       --accent: #7c95ff; --ins-bg: #23401c; --ins-ink: #b9eaa6; --del-ink: #f08e8e; --warn: #f0c060; --warn-bg: #3a2f17;
-      --gi: #ff8a50; --sp: #b197fc;
+      --gi: #ff8a50; --sp: #b197fc; --fix-bg: #1f3354; --fix-ink: #a9cbff; --redo-bg: #3b3214; --redo-line: #c9a227;
     }
   }
   * { box-sizing: border-box; }
@@ -44,6 +44,18 @@
   del { color: var(--del-ink); opacity: .75; }
   #out.clean del { display: none; }
   #out.clean ins { background: none; color: inherit; }
+  .gfix { background: var(--fix-bg); color: var(--fix-ink); border-bottom: 2px solid var(--fix-ink); border-radius: 2px; cursor: pointer; }
+  del.gfix { text-decoration: line-through; opacity: .8; }
+  #out.clean .gfix { background: none; color: inherit; border: 0; }
+  #out.clean del.gfix { display: none; }
+  .redo { background: var(--redo-bg); box-shadow: 0 0 0 1px var(--redo-line); border-radius: 3px;
+          -webkit-box-decoration-break: clone; box-decoration-break: clone; cursor: pointer; }
+  #out.clean .redo { background: none; box-shadow: none; }
+  #out [data-s] { cursor: pointer; }
+  .legend { display: inline-flex; gap: 10px; margin-right: 12px; }
+  .legend span { padding: 0 4px; border-radius: 2px; }
+  .legend .lg-ins { background: var(--ins-bg); color: var(--ins-ink); }
+  .legend .lg-gi { text-decoration: underline wavy var(--gi); text-underline-offset: 3px; }
   #flags { margin: 0; padding: 8px 14px; border-top: 1px solid var(--line); font-size: 13px; background: var(--warn-bg);
            color: var(--warn); max-height: 25%; overflow: auto; }
   #flags:empty, #fixed:empty { display: none; }
@@ -84,7 +96,7 @@
     <textarea id="draft" spellcheck="false" placeholder="Paste a draft here, or import a .txt, .md or .docx file."></textarea>
   </section>
   <section class="pane">
-    <div class="head"><b>Rewrite</b><span><span id="gcount" class="gcount"></span> <span id="dout">0 words</span></span></div>
+    <div class="head"><b>Rewrite</b><span><span class="legend"><span class="lg-ins">rewording</span><span class="gfix">grammar fix</span><span class="lg-gi">suggestion</span><span class="redo">redone</span></span><span id="gcount" class="gcount"></span> <span id="dout">0 words</span></span></div>
     <div id="out"></div>
     <div id="fixed"></div>
     <div id="flags"></div>
@@ -149,17 +161,27 @@ function diffMarks(a, b) {
   return {insAt, dels};
 }
 
-// Rewrite as HTML: new words <ins>, dropped words <del>, grammar issues <mark class="gi">.
-function renderOut(a, b, list) {
+const fixTitle = f => `${f.from || '(nothing)'} → ${f.to || '(deleted)'}`;
+
+// Rewrite as HTML: model's new words <ins> (green), dropped draft words <del>, grammar corrections
+// <span class="gfix"> (blue), open grammar suggestions <mark class="gi"> (wavy underline), sentences
+// rewritten again <span class="redo">. Every run of rewrite text sits in <span data-s="offset">.
+function renderOut(a, b, list, fx = [], rd = []) {
   const {insAt, dels} = diffMarks(a, b);
-  const iss = new Int32Array(b.length).fill(-1);
+  const iss = new Int32Array(b.length).fill(-1), fix = new Int32Array(b.length).fill(-1);
+  const red = new Int32Array(b.length).fill(-1);
   list.forEach((x, k) => iss.fill(k, x.offset, x.offset + x.length));
+  rd.forEach((r, k) => red.fill(k, r.offset, r.offset + r.length));
+  const gone = new Map();   // corrections that deleted text: shown struck through in blue
+  fx.forEach((f, k) => f.length ? fix.fill(k, f.offset, f.offset + f.length) : gone.set(f.offset, k));
   let html = '', s = 0;
   const run = e => {
     if (e <= s) return;
-    let t = esc(b.slice(s, e));
-    if (insAt[s]) t = '<ins>' + t + '</ins>';
+    let t = `<span data-s="${s}">${esc(b.slice(s, e))}</span>`;
+    if (fix[s] >= 0) t = `<span class="gfix" data-f="${fix[s]}" title="${esc(fixTitle(fx[fix[s]]))}">${t}</span>`;
+    else if (insAt[s]) t = '<ins>' + t + '</ins>';
     if (iss[s] >= 0) t = `<mark class="gi${list[iss[s]].category === 'TYPOS' ? ' sp' : ''}" data-i="${iss[s]}">${t}</mark>`;
+    if (red[s] >= 0) t = `<span class="redo" data-r="${red[s]}">${t}</span>`;
     html += t; s = e;
   };
   for (let p = 0; p <= b.length; p++) {
@@ -168,29 +190,124 @@ function renderOut(a, b, list) {
       html += (p && !/\s/.test(b[p - 1]) ? ' ' : '') + '<del>' + esc(dels.get(p)) + '</del>'
               + (p < b.length && !/\s/.test(b[p]) ? ' ' : '');
     }
+    if (gone.has(p)) {
+      run(p);
+      const k = gone.get(p);
+      html += `<del class="gfix" data-f="${k}" title="${esc(fixTitle(fx[k]))}">${esc(fx[k].from)}</del>`;
+    }
     if (p === b.length) run(p);
-    else if (p > s && (insAt[p] !== insAt[s] || iss[p] !== iss[s])) run(p);
+    else if (p > s && (insAt[p] !== insAt[s] || iss[p] !== iss[s] || fix[p] !== fix[s] || red[p] !== red[s])) run(p);
   }
   return html;
 }
 
 function show(text, pending) {
   rewrite = text;
-  out.innerHTML = renderOut(draft.value, text, issues);
+  out.innerHTML = renderOut(draft.value, text, issues, fixes, redos);
   out.classList.toggle('pending', !!pending);
   $('dout').textContent = words(text) + ' words';
   $('gcount').textContent = issues.length ? `${issues.length} to review` : '';
 }
 
 // ── grammar (LanguageTool) ─────────────────────────────────────────────────────────────────
-let issues = [], fixed = [];
+let issues = [], fixes = [];
+let redos = [];             // {offset, length, prev}: sentences rewritten again; prev is the text before the first redo
+const ignored = new Set();  // "rule|text" of undone corrections and ignored suggestions: never applied again
+const keyOf = x => x.rule + '|' + rewrite.slice(x.offset, x.offset + x.length);
+
+// Replace rewrite[o, o + n) with rep; issues and corrections inside it are dropped, later ones shift.
+// A redone sentence that contains the edit grows or shrinks with it.
+function edit(o, n, rep) {
+  const d = rep.length - n, end = o + n;
+  rewrite = rewrite.slice(0, o) + rep + rewrite.slice(end);
+  const keep = y => y.offset >= end || y.offset + y.length <= o;
+  const shift = y => y.offset >= end ? {...y, offset: y.offset + d} : y;
+  issues = issues.filter(keep).map(shift);
+  fixes = fixes.filter(keep).map(shift);
+  redos = redos.flatMap(r => {
+    if (end <= r.offset) return [{...r, offset: r.offset + d}];
+    if (o >= r.offset + r.length) return [r];
+    if (o >= r.offset && end <= r.offset + r.length) return [{...r, length: r.length + d}];
+    return [];
+  });
+}
 
 function applyFix(k, rep) {
-  const x = issues[k], d = rep.length - x.length, end = x.offset + x.length;
-  fixed.push(rewrite.slice(x.offset, end) + ' → ' + rep);
-  rewrite = rewrite.slice(0, x.offset) + rep + rewrite.slice(end);
-  issues = issues.filter((y, q) => q !== k && (y.offset >= end || y.offset + y.length <= x.offset))
-                 .map(y => y.offset >= end ? {...y, offset: y.offset + d} : y);
+  const x = issues[k], from = rewrite.slice(x.offset, x.offset + x.length);
+  edit(x.offset, x.length, rep);
+  fixes.push({offset: x.offset, length: rep.length, from, to: rep, message: x.message, rule: x.rule});
+  fixes.sort((p, q) => p.offset - q.offset);
+}
+
+function undoFix(k) {
+  const f = fixes[k];
+  ignored.add(f.rule + '|' + f.from);
+  fixes.splice(k, 1);
+  edit(f.offset, f.length, f.from);
+}
+
+// ── rewrite selected sentences again ─────────────────────────────────────────────────────────
+function sentenceAt(o) {
+  const t = rewrite, endP = /[.!?。！？]/;
+  let s = Math.min(o, t.length), e = s;
+  while (s > 0 && t[s - 1] !== '\n' && !(/\s/.test(t[s - 1]) && s > 1 && endP.test(t[s - 2]))) s--;
+  while (e < t.length && t[e] !== '\n' && !(endP.test(t[e]) && (e + 1 === t.length || /\s/.test(t[e + 1])))) e++;
+  if (e < t.length && t[e] !== '\n') e++;   // keep the closing punctuation
+  while (s < e && /\s/.test(t[s])) s++;
+  while (e > s && /\s/.test(t[e - 1])) e--;
+  return [s, e];
+}
+
+// DOM position (text node + offset) → offset in rewrite, via the data-s runs.
+function posOf(node, off) {
+  if (node.nodeType !== 3) {
+    const c = node.childNodes[off] || node.childNodes[off - 1];
+    const el = c && (c.nodeType === 3 ? c.parentElement : (c.matches('[data-s]') ? c : c.querySelector('[data-s]')));
+    const run = el && el.closest('[data-s]');
+    return run ? +run.dataset.s : null;
+  }
+  const run = node.parentElement.closest('[data-s]');
+  return run ? +run.dataset.s + off : null;
+}
+
+async function redoRange(s, e) {
+  pop.hidden = true;
+  // take whole redone sentences, and send the text from before they were redone
+  for (const r of redos) if (r.offset < e && r.offset + r.length > s) { s = Math.min(s, r.offset); e = Math.max(e, r.offset + r.length); }
+  let prev = '', p = s;
+  for (const r of redos.filter(r => r.offset >= s && r.offset + r.length <= e).sort((x, y) => x.offset - y.offset)) {
+    prev += rewrite.slice(p, r.offset) + r.prev; p = r.offset + r.length;
+  }
+  prev += rewrite.slice(p, e);
+  $('go').disabled = true; setStatus('Rewriting again…');
+  try {
+    const r = await fetch('/api/redo', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                        body: JSON.stringify({text: prev})});
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.statusText);
+    if (!d.pieces) { setStatus('Too short for the model to rewrite (under about 6 words); select more text.'); return; }
+    let text = d.text.trim();
+    if (!/\n/.test(prev)) text = text.replace(/\s*\n+\s*/g, ' ');   // one sentence in, one paragraph out
+    redos = redos.filter(x => x.offset + x.length <= s || x.offset >= e);
+    edit(s, e - s, text);
+    redos.push({offset: s, length: text.length, prev});
+    redos.sort((x, y) => x.offset - y.offset);
+    const list = await checkGrammar(rewrite);
+    if (list) await autoCorrect(list, [s, s + text.length]);
+    show(rewrite); showFixed();
+    setStatus('Rewritten again' + (d.flags.length ? ' · check it: ' + d.flags.map(f => f.note).join('; ') : '')
+              + ' · click it to revert or try again');
+  } catch (err) {
+    setStatus('Error: ' + err.message);
+  } finally {
+    $('go').disabled = false;
+  }
+}
+
+function revertRedo(k) {
+  const r = redos[k];
+  redos.splice(k, 1);
+  edit(r.offset, r.length, r.prev);
 }
 
 async function checkGrammar(text) {
@@ -200,28 +317,32 @@ async function checkGrammar(text) {
   return d.available ? d.issues : null;
 }
 
-// Apply the safe fixes (grammar, punctuation, casing), check again, up to three rounds.
-async function autoCorrect(list) {
-  for (let round = 0; round < 3; round++) {
-    issues = list;
-    const auto = issues.map((x, k) => [x, k]).filter(([x]) => x.auto).sort((p, q) => q[0].offset - p[0].offset);
-    if (!auto.length || !$('auto').checked) return;
+// Apply the safe fixes (grammar, punctuation, casing), check again, up to three rounds. With a range
+// [start, end), only issues inside it are taken from the check; the rest stay as they were.
+async function autoCorrect(list, range = null) {
+  const within = x => !range || (x.offset >= range[0] && x.offset + x.length <= range[1]);
+  for (let round = 0; ; round++) {
+    issues = [...(range ? issues.filter(x => !within(x)) : []),
+              ...list.filter(x => within(x) && !ignored.has(keyOf(x)))].sort((p, q) => p.offset - q.offset);
+    const auto = issues.filter(x => x.auto && within(x)).sort((p, q) => q.offset - p.offset);
+    if (round === 3 || !auto.length || !$('auto').checked) return;
     let lastStart = Infinity;
-    for (const [x] of auto) {   // from the end, so earlier offsets stay valid
+    for (const x of auto) {   // from the end, so earlier offsets stay valid
       const k = issues.indexOf(x);
       if (k < 0 || x.offset + x.length > lastStart) continue;
+      if (range) range[1] += x.replacements[0].length - x.length;
       applyFix(k, x.replacements[0]);
       lastStart = x.offset;
     }
     list = await checkGrammar(rewrite);
-    if (!list) { issues = []; return; }
+    if (!list) return;
   }
-  issues = list;
 }
 
 function showFixed() {
-  $('fixed').innerHTML = fixed.length
-    ? `<b>Auto-corrected ${fixed.length}:</b> ` + fixed.map(f => `<span>${esc(f)}</span>`).join(' · ') : '';
+  $('fixed').innerHTML = fixes.length
+    ? `<span class="gfix">${fixes.length} grammar correction${fixes.length > 1 ? 's' : ''}</span> in blue:`
+      + ' hover to see what changed, click to undo.' : '';
 }
 
 async function runCheck() {
@@ -231,13 +352,32 @@ async function runCheck() {
   if (!list) { setStatus('LanguageTool is not running; start it with ./start-languagetool.sh'); return; }
   await autoCorrect(list);
   show(rewrite); showFixed();
-  setStatus(`Grammar: ${fixed.length} auto-corrected, ${issues.length} to review`);
+  setStatus(`Grammar: ${fixes.length} corrected, ${issues.length} to review`);
 }
 
 const pop = $('pop');
+function openPop(el) {
+  const r = el.getBoundingClientRect();
+  pop.hidden = false;
+  pop.style.left = Math.max(8, Math.min(r.left, innerWidth - pop.offsetWidth - 8)) + 'px';
+  pop.style.top = (r.bottom + 6 + pop.offsetHeight > innerHeight ? r.top - pop.offsetHeight - 6 : r.bottom + 6) + 'px';
+}
 out.addEventListener('click', e => {
+  const fx = e.target.closest('.gfix');
+  if (fx && !e.target.closest('mark.gi')) {   // a correction: show what changed, offer undo
+    const k = +fx.dataset.f, f = fixes[k];
+    $('pmsg').innerHTML = `<b>${esc(fixTitle(f))}</b><br>${esc(f.message)}`;
+    $('preps').innerHTML = '';
+    const b = document.createElement('button');
+    b.textContent = 'Undo';
+    b.onclick = () => { undoFix(k); pop.hidden = true; show(rewrite); showFixed(); };
+    $('preps').append(b);
+    openPop(fx);
+    e.stopPropagation();
+    return;
+  }
   const mk = e.target.closest('mark.gi');
-  if (!mk) return;
+  if (!mk) { sentenceMenu(e); return; }
   const k = +mk.dataset.i, x = issues[k];
   $('pmsg').textContent = x.message;
   $('preps').innerHTML = '';
@@ -249,14 +389,50 @@ out.addEventListener('click', e => {
   }
   const ig = document.createElement('button');
   ig.textContent = 'Ignore'; ig.className = 'ghost';
-  ig.onclick = () => { issues.splice(k, 1); pop.hidden = true; show(rewrite); };
+  ig.onclick = () => { ignored.add(keyOf(x)); issues.splice(k, 1); pop.hidden = true; show(rewrite); };
   $('preps').append(ig);
-  const r = mk.getBoundingClientRect();
-  pop.hidden = false;
-  pop.style.left = Math.max(8, Math.min(r.left, innerWidth - pop.offsetWidth - 8)) + 'px';
-  pop.style.top = (r.bottom + 6 + pop.offsetHeight > innerHeight ? r.top - pop.offsetHeight - 6 : r.bottom + 6) + 'px';
+  openPop(mk);
   e.stopPropagation();
 });
+
+const btn = (label, fn, cls = '') => {
+  const b = document.createElement('button');
+  b.textContent = label; b.className = cls; b.onclick = fn;
+  return b;
+};
+
+// Click a sentence (or select several) → rewrite again; click a redone one → revert or try again.
+function sentenceMenu(e) {
+  if (!rewrite || !$('stop').disabled || $('go').disabled) return;   // not while a rewrite runs
+  const sel = getSelection();
+  let s = null, en = null;
+  if (sel.rangeCount && !sel.isCollapsed && out.contains(sel.anchorNode)) {
+    const r = sel.getRangeAt(0);
+    const a = posOf(r.startContainer, r.startOffset), b = posOf(r.endContainer, r.endOffset);
+    if (a !== null && b !== null && b > a) { s = sentenceAt(a)[0]; en = sentenceAt(Math.max(a, b - 1))[1]; }
+  }
+  const rd = e.target.closest('.redo');
+  if (s === null && rd) {
+    const k = +rd.dataset.r, r = redos[k];
+    $('pmsg').innerHTML = `<b>Rewritten again.</b> Before: “${esc(r.prev.length > 160 ? r.prev.slice(0, 160) + '…' : r.prev)}”`;
+    $('preps').innerHTML = '';
+    $('preps').append(btn('Revert', () => { revertRedo(k); pop.hidden = true; show(rewrite); showFixed(); }),
+                      btn('Try again', () => redoRange(r.offset, r.offset + r.length), 'ghost'));
+    openPop(rd); e.stopPropagation();
+    return;
+  }
+  if (s === null) {
+    const p = sel.rangeCount ? posOf(sel.anchorNode, sel.anchorOffset) : null;
+    if (p === null) return;
+    [s, en] = sentenceAt(p);
+  }
+  if (en <= s) return;
+  const t = rewrite.slice(s, en), n = (t.match(/[.!?。！？](\s|$)/g) || []).length || 1;
+  $('pmsg').textContent = `“${t.length > 160 ? t.slice(0, 160) + '…' : t}”`;
+  $('preps').innerHTML = '';
+  $('preps').append(btn(n > 1 ? `Rewrite these ${n} sentences again` : 'Rewrite this sentence again', () => redoRange(s, en)));
+  openPop(e.target.closest('[data-s]') || out); e.stopPropagation();
+}
 document.addEventListener('click', e => { if (!pop.contains(e.target)) pop.hidden = true; });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') pop.hidden = true; });
 out.addEventListener('scroll', () => pop.hidden = true);
@@ -275,7 +451,7 @@ async function run() {
   if (!text.trim()) return;
   ctrl = new AbortController();
   $('flags').innerHTML = ''; $('fixed').innerHTML = '';
-  out.textContent = ''; rewrite = ''; issues = []; fixed = [];
+  out.textContent = ''; rewrite = ''; issues = []; fixes = []; redos = []; ignored.clear();
   progress = 'starting'; busy(true); tick();
   try {
     const r = await fetch('/api/rewrite', {method: 'POST', body: JSON.stringify({text}), signal: ctrl.signal,
@@ -315,7 +491,7 @@ function handle(ev) {
       show(rewrite, false); showFixed(); busy(false);
       setStatus(`Done in ${ev.seconds} s · ${ev.pieces} piece(s) · copies ${(ev.copy_rate * 100).toFixed(0)}% of the draft`
                 + (ev.flags.length ? ` · ${ev.flags.length} piece(s) to check` : '')
-                + (ev.lt ? ` · grammar: ${fixed.length} auto-corrected, ${issues.length} to review`
+                + (ev.lt ? ` · grammar: ${fixes.length} corrected, ${issues.length} to review`
                          : ' · grammar check off (LanguageTool not running)'));
     };
     autoCorrect(ev.issues).then(finish, finish);
@@ -325,7 +501,7 @@ function handle(ev) {
 }
 
 $('go').onclick = run;
-$('check').onclick = () => { fixed = []; runCheck(); };
+$('check').onclick = runCheck;
 $('stop').onclick = () => ctrl && ctrl.abort();
 document.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !$('go').disabled) run(); });
 $('marks').onchange = e => out.classList.toggle('clean', !e.target.checked);

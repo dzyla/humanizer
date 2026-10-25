@@ -54,6 +54,11 @@ def draft_terms(draft):
     for w in _WORD.findall(draft):
         if re.search(r"[A-Za-z]", w) and (any(c.isupper() for c in w[1:]) or (re.search(r"\d", w) and re.search(r"[A-Za-z]", w))):
             terms.setdefault(w.lower(), w)
+            # singular and plural: ORFs in the draft also fixes "orf", ORF also fixes "orfs"
+            if w.endswith("s") and len(w) > 3 and w[-2].isupper():
+                terms.setdefault(w[:-1].lower(), w[:-1])
+            elif w[-1].isupper():
+                terms.setdefault(w.lower() + "s", w + "s")
     return terms
 
 
@@ -164,6 +169,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, {"error": f"could not read the .docx: {e}"})
         elif self.path == "/api/rewrite":
             self._rewrite()
+        elif self.path == "/api/redo":
+            self._redo()
         elif self.path == "/api/check":
             try:
                 d = json.loads(self._body() or b"{}")
@@ -198,45 +205,67 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             LOCK.release()
 
+    def _redo(self):
+        """Rewrite a few sentences again: one JSON answer, no streaming."""
+        try:
+            text = json.loads(self._body() or b"{}").get("text", "")
+        except ValueError:
+            return self._send(400, {"error": "bad request"})
+        if not server_up(ARGS.server):
+            return self._send(503, {"error": f"llama-server is not running at {ARGS.server}"})
+        if not LOCK.acquire(blocking=False):
+            return self._send(409, {"error": "another rewrite is running"})
+        try:
+            new, flags, pieces, _ = rewrite_pieces(text)
+            self._send(200, {"text": new, "flags": flags, "pieces": pieces})
+        except hz.HzError as e:
+            self._send(502, {"error": str(e)})
+        finally:
+            LOCK.release()
+
     def _run(self, text):
         if not server_up(ARGS.server):
             return self._emit({"type": "error", "error": f"llama-server is not running at {ARGS.server}"})
-        planner = T.Planner()
-        plan = planner.plan_text(text)
-        units = plan.units
-        self._emit({"type": "plan", "pieces": len(units), "kept": dict(plan.kept)})
-        backend = hz.Backend("server", ARGS.server)
-        out = QuietOut()
-        results, flags = {}, []
         t0 = time.time()
-
-        def render():
-            # pieces not rewritten yet show the draft, so the right panel fills in place
-            return plan.render({u.id: results.get(u.id, u.text) for u in units})
-
-        for k, u in enumerate(units, 1):
-            self._emit({"type": "progress", "k": k, "total": len(units)})
-            try:
-                res, stats = hz.rewrite_units([u], backend, planner.sizer, out, lambda u: f"line {u.line}",
-                                              retries=ARGS.retries)
-            except hz.HzError as e:
-                return self._emit({"type": "error", "error": str(e)})
-            results.update(res)
-            s = stats[0]
-            if s["flagged"]:
-                flags.append({"line": u.line, "start": s["draft_start"],
-                              "note": hz._describe(s["issues"], s["copy_rate"], s["missing_numbers"],
-                                                   s["missing_urls"], s["added_numbers"])})
-            self._emit({"type": "piece", "k": k, "total": len(units), "seconds": s["seconds"], "text": render()})
-
-        drafts = "\n\n".join(u.text for u in units)
-        rewrites = "\n\n".join(results[u.id] for u in units)
-        final = render()
+        try:
+            final, flags, pieces, copy = rewrite_pieces(text, self._emit)
+        except hz.HzError as e:
+            return self._emit({"type": "error", "error": str(e)})
         self._emit({"type": "checking"})
         lt_ok, issues = grammar_check(final, text)
         self._emit({"type": "done", "text": final, "seconds": round(time.time() - t0, 1),
-                    "pieces": len(units), "flags": flags, "lt": lt_ok, "issues": issues,
-                    "copy_rate": round(T.copy_rate(drafts, rewrites), 3) if units else 0.0})
+                    "pieces": pieces, "flags": flags, "lt": lt_ok, "issues": issues, "copy_rate": copy})
+
+
+def rewrite_pieces(text, emit=lambda ev: None):
+    """hz pipeline over text → (rewrite, flagged pieces, piece count, copy rate). Emits plan/progress/piece events."""
+    planner = T.Planner()
+    plan = planner.plan_text(text)
+    units = plan.units
+    emit({"type": "plan", "pieces": len(units), "kept": dict(plan.kept)})
+    backend = hz.Backend("server", ARGS.server)
+    out = QuietOut()
+    results, flags = {}, []
+
+    def render():
+        # pieces not rewritten yet show the draft, so the right panel fills in place
+        return plan.render({u.id: results.get(u.id, u.text) for u in units})
+
+    for k, u in enumerate(units, 1):
+        emit({"type": "progress", "k": k, "total": len(units)})
+        res, stats = hz.rewrite_units([u], backend, planner.sizer, out, lambda u: f"line {u.line}",
+                                      retries=ARGS.retries)
+        results.update(res)
+        s = stats[0]
+        if s["flagged"]:
+            flags.append({"line": u.line, "start": s["draft_start"],
+                          "note": hz._describe(s["issues"], s["copy_rate"], s["missing_numbers"],
+                                               s["missing_urls"], s["added_numbers"])})
+        emit({"type": "piece", "k": k, "total": len(units), "seconds": s["seconds"], "text": render()})
+
+    drafts = "\n\n".join(u.text for u in units)
+    rewrites = "\n\n".join(results[u.id] for u in units)
+    return render(), flags, len(units), round(T.copy_rate(drafts, rewrites), 3) if units else 0.0
 
 
 def main():
