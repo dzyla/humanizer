@@ -35,8 +35,8 @@
   .pane .head { display: flex; justify-content: space-between; padding: 8px 14px; border-bottom: 1px solid var(--line);
                 font-size: 13px; color: var(--muted); }
   .pane .head b { color: var(--ink); font-weight: 600; }
-  #draft, #out { flex: 1; overflow: auto; padding: 14px; margin: 0; font: 16px/1.65 Georgia, "Iowan Old Style", serif; color: var(--ink); }
-  #draft { border: 0; resize: none; background: transparent; outline: none; }
+  #draft, #out, #edit { flex: 1; overflow: auto; padding: 14px; margin: 0; font: 16px/1.65 Georgia, "Iowan Old Style", serif; color: var(--ink); }
+  #draft, #edit { border: 0; resize: none; background: transparent; outline: none; }
   #out { white-space: pre-wrap; word-wrap: break-word; }
   #out:empty::before { content: "The rewrite appears here."; color: var(--muted); }
   #out.pending { color: var(--muted); }
@@ -59,6 +59,7 @@
   #flags { margin: 0; padding: 8px 14px; border-top: 1px solid var(--line); font-size: 13px; background: var(--warn-bg);
            color: var(--warn); max-height: 25%; overflow: auto; }
   #flags:empty, #fixed:empty { display: none; }
+  .head button.small { padding: 1px 8px; font-size: 12px; margin-left: 10px; }
   #fixed { padding: 8px 14px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); max-height: 20%; overflow: auto; }
   mark.gi { background: none; color: inherit; cursor: pointer; text-decoration: underline wavy var(--gi); text-underline-offset: 3px; }
   mark.gi.sp { --gi: var(--sp); }
@@ -83,8 +84,9 @@
   <button id="stop" disabled>Stop</button>
   <label class="btn">Import file<input id="file" type="file" accept=".txt,.md,.markdown,.docx" hidden></label>
   <span class="spacer"></span>
-  <label class="toggle" title="Apply LanguageTool's grammar, punctuation and capitalization fixes automatically"><input id="auto" type="checkbox" checked> Auto-correct</label>
-  <button id="check">Check grammar</button>
+  <label class="toggle" title="Apply the safe grammar fixes as soon as a rewrite finishes"><input id="auto" type="checkbox"> Auto-correct</label>
+  <button id="check" title="Underline grammar issues in the rewrite">Check grammar</button>
+  <button id="fixall" title="Apply the safe grammar fixes (shown in blue; click one to undo)">Fix grammar</button>
   <label class="toggle"><input id="marks" type="checkbox" checked> Show changes</label>
   <label class="toggle"><input id="sync" type="checkbox" checked> Sync scroll</label>
   <button id="copy">Copy rewrite</button>
@@ -96,8 +98,9 @@
     <textarea id="draft" spellcheck="false" placeholder="Paste a draft here, or import a .txt, .md or .docx file."></textarea>
   </section>
   <section class="pane">
-    <div class="head"><b>Rewrite</b><span><span class="legend"><span class="lg-ins">rewording</span><span class="gfix">grammar fix</span><span class="lg-gi">suggestion</span><span class="redo">redone</span></span><span id="gcount" class="gcount"></span> <span id="dout">0 words</span></span></div>
+    <div class="head"><b>Rewrite</b><span><span class="legend"><span class="lg-ins">rewording</span><span class="gfix">grammar fix</span><span class="lg-gi">suggestion</span><span class="redo">redone</span></span><span id="gcount" class="gcount"></span> <span id="dout">0 words</span><button id="editbtn" class="small" title="Edit the rewrite as plain text (works with the Grammarly browser extension)">Edit</button></span></div>
     <div id="out"></div>
+    <textarea id="edit" spellcheck="true" hidden></textarea>
     <div id="fixed"></div>
     <div id="flags"></div>
   </section>
@@ -319,13 +322,13 @@ async function checkGrammar(text) {
 
 // Apply the safe fixes (grammar, punctuation, casing), check again, up to three rounds. With a range
 // [start, end), only issues inside it are taken from the check; the rest stay as they were.
-async function autoCorrect(list, range = null) {
+async function autoCorrect(list, range = null, force = false) {
   const within = x => !range || (x.offset >= range[0] && x.offset + x.length <= range[1]);
   for (let round = 0; ; round++) {
     issues = [...(range ? issues.filter(x => !within(x)) : []),
               ...list.filter(x => within(x) && !ignored.has(keyOf(x)))].sort((p, q) => p.offset - q.offset);
     const auto = issues.filter(x => x.auto && within(x)).sort((p, q) => q.offset - p.offset);
-    if (round === 3 || !auto.length || !$('auto').checked) return;
+    if (round === 3 || !auto.length || !(force || $('auto').checked)) return;
     let lastStart = Infinity;
     for (const x of auto) {   // from the end, so earlier offsets stay valid
       const k = issues.indexOf(x);
@@ -354,6 +357,43 @@ async function runCheck() {
   show(rewrite); showFixed();
   setStatus(`Grammar: ${fixes.length} corrected, ${issues.length} to review`);
 }
+
+async function fixAll() {
+  if (!rewrite || editing) return;
+  setStatus('Fixing grammar…');
+  const list = await checkGrammar(rewrite);
+  if (!list) { setStatus('LanguageTool is not running; start it with ./start-languagetool.sh'); return; }
+  const before = fixes.length;
+  await autoCorrect(list, null, true);
+  show(rewrite); showFixed();
+  setStatus(`Grammar: ${fixes.length - before} fixed (blue, click one to undo), ${issues.length} suggestion(s) left`);
+}
+
+// ── edit the rewrite as plain text (the Grammarly browser extension works in text boxes) ──────
+const editBox = $('edit');
+let editing = false;
+const current = () => editing ? editBox.value : rewrite;
+function setEditing(on) {
+  if (on === editing || (on && !rewrite)) return;
+  let changed = false;
+  if (on) { editBox.value = rewrite; pop.hidden = true; }
+  else if (editBox.value !== rewrite) {
+    // marks and offsets belong to the old text: start fresh from the edited one
+    rewrite = editBox.value; issues = []; fixes = []; redos = []; changed = true;
+  }
+  editing = on;
+  out.hidden = on; editBox.hidden = !on;
+  $('editbtn').textContent = on ? 'Done editing' : 'Edit';
+  $('editbtn').classList.toggle('primary', on);
+  $('check').disabled = $('fixall').disabled = on;
+  if (on) { editBox.focus(); setStatus('Editing: Grammarly and the browser spell check work here. Click Done editing to go back.'); }
+  else {
+    show(rewrite); showFixed();
+    if (changed) setStatus('Edits kept. Change marks now compare with the draft; click Check grammar to check again.');
+  }
+}
+$('editbtn').onclick = () => setEditing(!editing);
+editBox.addEventListener('input', () => $('dout').textContent = words(editBox.value) + ' words');
 
 const pop = $('pop');
 function openPop(el) {
@@ -439,7 +479,7 @@ out.addEventListener('scroll', () => pop.hidden = true);
 
 function setStatus(s) { $('status').textContent = s; }
 function busy(on) {
-  $('go').disabled = on; $('stop').disabled = !on; draft.readOnly = on;
+  $('go').disabled = on; $('stop').disabled = !on; draft.readOnly = on; $('editbtn').disabled = on;
   clearInterval(timer);
   if (on) { t0 = Date.now(); timer = setInterval(tick, 500); }
 }
@@ -447,6 +487,7 @@ let progress = '';
 function tick() { setStatus(progress + ' · ' + ((Date.now() - t0) / 1000).toFixed(0) + ' s'); }
 
 async function run() {
+  setEditing(false);
   const text = draft.value;
   if (!text.trim()) return;
   ctrl = new AbortController();
@@ -491,7 +532,8 @@ function handle(ev) {
       show(rewrite, false); showFixed(); busy(false);
       setStatus(`Done in ${ev.seconds} s · ${ev.pieces} piece(s) · copies ${(ev.copy_rate * 100).toFixed(0)}% of the draft`
                 + (ev.flags.length ? ` · ${ev.flags.length} piece(s) to check` : '')
-                + (ev.lt ? ` · grammar: ${fixes.length} corrected, ${issues.length} to review`
+                + (ev.lt ? (fixes.length ? ` · grammar: ${fixes.length} corrected, ${issues.length} to review`
+                                         : ` · grammar: ${issues.length} issue(s) underlined; Fix grammar applies the safe ones`)
                          : ' · grammar check off (LanguageTool not running)'));
     };
     autoCorrect(ev.issues).then(finish, finish);
@@ -502,19 +544,22 @@ function handle(ev) {
 
 $('go').onclick = run;
 $('check').onclick = runCheck;
+$('fixall').onclick = fixAll;
+try { $('auto').checked = localStorage.getItem('hz-auto') === '1'; } catch (e) {}
+$('auto').onchange = e => { try { localStorage.setItem('hz-auto', e.target.checked ? '1' : '0'); } catch (err) {} };
 $('stop').onclick = () => ctrl && ctrl.abort();
 document.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !$('go').disabled) run(); });
 $('marks').onchange = e => out.classList.toggle('clean', !e.target.checked);
 
 $('copy').onclick = async () => {
-  if (!rewrite) return;
-  await navigator.clipboard.writeText(rewrite);
+  if (!current()) return;
+  await navigator.clipboard.writeText(current());
   $('copy').textContent = 'Copied'; setTimeout(() => $('copy').textContent = 'Copy rewrite', 1200);
 };
 $('save').onclick = () => {
-  if (!rewrite) return;
+  if (!current()) return;
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([rewrite], {type: 'text/plain'}));
+  a.href = URL.createObjectURL(new Blob([current()], {type: 'text/plain'}));
   a.download = 'rewrite.txt'; a.click(); URL.revokeObjectURL(a.href);
 };
 
@@ -541,7 +586,8 @@ function syncFrom(src, dst) {
   dst.scrollTop = p * (dst.scrollHeight - dst.clientHeight);
   requestAnimationFrame(() => syncing = false);
 }
-draft.addEventListener('scroll', () => syncFrom(draft, out));
+draft.addEventListener('scroll', () => syncFrom(draft, editing ? editBox : out));
+editBox.addEventListener('scroll', () => syncFrom(editBox, draft));
 out.addEventListener('scroll', () => syncFrom(out, draft));
 
 async function health() {

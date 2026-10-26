@@ -5,11 +5,12 @@ A local, two-panel web UI for the [humanizer](https://github.com/sgaofen/humaniz
 - **Draft on the left, rewrite on the right.** New wording is highlighted and replaced wording is struck through. Long drafts are rewritten piece by piece and fill in as they finish.
 - **The `hz` pipeline underneath.** Headings, code, tables and links are kept as they are. A piece is rewritten again if a number or link goes missing, it copies too much of the draft, or it comes back cut off.
 - **Grammar check with [LanguageTool](https://languagetool.org), running locally.** Your text never leaves the machine.
-  - Fixed automatically (toggle **Auto-correct**): grammar, punctuation, capitalization, doubled words, a/an, and prose lines that end without punctuation.
+  - Safe fixes (grammar, punctuation, capitalization, doubled words, a/an, prose lines that end without punctuation) are underlined after a rewrite. Click **Fix grammar** to apply them all, or click one underline to apply just that fix. Turn on **Auto-correct** to apply them as soon as a rewrite finishes; the setting is remembered.
   - Names restored from the draft: if the model writes `genbank`, `snapgene` or `orf`, the draft's `GenBank`, `SnapGene` and `ORF` come back.
   - Only underlined, never auto-applied: spelling and style. Click an underline to apply a suggestion or ignore it. Every word in your draft and every word in `ui/science-words.txt` counts as correctly spelled.
   - Corrections show in **blue**, apart from the model's green rewording. Hover one to see what changed; click it to undo. Undone corrections and ignored suggestions are not applied again.
 - **Rewrite a sentence again.** Click a sentence in the rewrite, or select several, and choose *Rewrite again*. Redone text is highlighted in yellow; click it to **Revert** or **Try again** (which starts from the text before the first redo).
+- **Edit the rewrite, with Grammarly.** Click **Edit** above the rewrite to get a plain text box. The Grammarly browser extension and the browser's spell check work there, and in the draft box. Click **Done editing** to go back; your edits are kept, and the change marks then compare with the draft.
 - Import `.txt`, `.md` or `.docx`; copy or download the rewrite; scroll both panels together.
 
 LanguageTool catches subject–verb agreement at the start of a sentence (`The results was`), `less`/`fewer`, doubled words, a/an, `neither … or` and capitalization. It does **not** catch sentence fragments, comma splices or most missing articles, so still read the result.
