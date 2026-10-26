@@ -27,9 +27,16 @@ if ! curl -sf "$LT_URL/v2/languages" >/dev/null 2>&1; then
     fi
 fi
 
+# suggested wording for hard-to-read sentences (optional): start the clarity model if it is downloaded
+CL_URL="http://127.0.0.1:${CLARITY_PORT:-8087}"
+if ! curl -sf "$CL_URL/health" >/dev/null 2>&1 && [ -f "$DIR/clarity-model/Qwen3-4B-Instruct-2507-Q4_K_M.gguf" ]; then
+    echo "Starting the clarity model on $CL_URL (log: $DIR/clarity.log) ..." >&2
+    nohup "$DIR/start-clarity.sh" >"$DIR/clarity.log" 2>&1 &
+fi
+
 # open the page in the Windows browser under WSL, or the desktop default elsewhere
 ( sleep 1; { command -v wslview >/dev/null && wslview "http://127.0.0.1:$UI_PORT"; } \
     || { command -v explorer.exe >/dev/null && explorer.exe "http://127.0.0.1:$UI_PORT"; } \
     || { command -v xdg-open >/dev/null && xdg-open "http://127.0.0.1:$UI_PORT"; } ) >/dev/null 2>&1 &
 
-exec "$DIR/.venv/bin/python" "$DIR/ui/app.py" --port "$UI_PORT" --server "$URL" --lt "$LT_URL"
+exec "$DIR/.venv/bin/python" "$DIR/ui/app.py" --port "$UI_PORT" --server "$URL" --lt "$LT_URL" --clarity "$CL_URL"

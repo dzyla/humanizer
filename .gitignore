@@ -4,3 +4,4 @@ humanizer-model/
 tools/
 *.log
 __pycache__/
+clarity-model/

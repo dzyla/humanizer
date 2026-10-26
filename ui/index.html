@@ -8,13 +8,13 @@
   :root {
     --bg: #f6f6f3; --panel: #ffffff; --ink: #1d1f22; --muted: #6b7078; --line: #dcdcd6;
     --accent: #3b5bdb; --ins-bg: #d9f2d0; --ins-ink: #1f5f12; --del-ink: #a33a3a; --warn: #9a6200; --warn-bg: #fff4dc;
-    --gi: #d9480f; --sp: #7048e8; --fix-bg: #dbe8ff; --fix-ink: #1c4f9c; --redo-bg: #fff1c2; --redo-line: #d9a400;
+    --gi: #d9480f; --sp: #7048e8; --fix-bg: #dbe8ff; --fix-ink: #1c4f9c; --redo-bg: #fff1c2; --redo-line: #d9a400; --cl-flag: rgba(230, 60, 60, .16); --cl-hint: rgba(240, 170, 0, .16);
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #141518; --panel: #1c1e22; --ink: #e6e6e3; --muted: #959aa3; --line: #30333a;
       --accent: #7c95ff; --ins-bg: #23401c; --ins-ink: #b9eaa6; --del-ink: #f08e8e; --warn: #f0c060; --warn-bg: #3a2f17;
-      --gi: #ff8a50; --sp: #b197fc; --fix-bg: #1f3354; --fix-ink: #a9cbff; --redo-bg: #3b3214; --redo-line: #c9a227;
+      --gi: #ff8a50; --sp: #b197fc; --fix-bg: #1f3354; --fix-ink: #a9cbff; --redo-bg: #3b3214; --redo-line: #c9a227; --cl-flag: rgba(255, 110, 110, .22); --cl-hint: rgba(240, 190, 60, .18);
     }
   }
   * { box-sizing: border-box; }
@@ -35,9 +35,9 @@
   .pane .head { display: flex; justify-content: space-between; padding: 8px 14px; border-bottom: 1px solid var(--line);
                 font-size: 13px; color: var(--muted); }
   .pane .head b { color: var(--ink); font-weight: 600; }
-  #draft, #out, #edit { flex: 1; overflow: auto; padding: 14px; margin: 0; font: 16px/1.65 Georgia, "Iowan Old Style", serif; color: var(--ink); }
+  #draft, #out, #edit, #cview { flex: 1; overflow: auto; padding: 14px; margin: 0; font: 16px/1.65 Georgia, "Iowan Old Style", serif; color: var(--ink); }
   #draft, #edit { border: 0; resize: none; background: transparent; outline: none; }
-  #out { white-space: pre-wrap; word-wrap: break-word; }
+  #out, #cview { white-space: pre-wrap; word-wrap: break-word; }
   #out:empty::before { content: "The rewrite appears here."; color: var(--muted); }
   #out.pending { color: var(--muted); }
   ins { background: var(--ins-bg); color: var(--ins-ink); text-decoration: none; border-radius: 2px; }
@@ -78,6 +78,11 @@
   .syn-row { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
   .syn-g { flex-basis: 100%; color: var(--muted); font-style: italic; }
   .syn-row button { padding: 1px 7px; font-size: 13px; }
+  .cl { border-radius: 2px; cursor: pointer; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+  .cl.flag { background: var(--cl-flag); } .cl.hint { background: var(--cl-hint); }
+  #pmsg ul { margin: 6px 0 0; padding-left: 18px; }
+  .sug { margin: 4px 0 6px; font: 15px/1.55 Georgia, "Iowan Old Style", serif; }
+  .sug-warn { color: var(--warn); margin-bottom: 4px; }
   #flags div + div { margin-top: 4px; }
   footer { display: flex; gap: 16px; padding: 6px 16px 10px; font-size: 13px; color: var(--muted); flex-wrap: wrap; }
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-right: 6px; }
@@ -102,8 +107,9 @@
 </header>
 <main>
   <section class="pane">
-    <div class="head"><b>Draft</b><span id="din">0 words</span></div>
+    <div class="head"><b>Draft</b><span><span id="ccount" class="gcount"></span> <span id="din">0 words</span><button id="cundo" class="small" hidden>Undo update</button><button id="clbtn" class="small" title="Find hard-to-read sentences and get clearer wording">Clarity</button></span></div>
     <textarea id="draft" spellcheck="false" placeholder="Paste a draft here, or import a .txt, .md or .docx file."></textarea>
+    <div id="cview" hidden></div>
   </section>
   <section class="pane">
     <div class="head"><b>Rewrite</b><span><span class="legend"><span class="lg-ins">rewording</span><span class="gfix">grammar fix</span><span class="lg-gi">suggestion</span><span class="redo">redone</span></span><span id="gcount" class="gcount"></span> <span id="dout">0 words</span><button id="editbtn" class="small" title="Edit the rewrite as plain text (works with the Grammarly browser extension)">Edit</button></span></div>
@@ -556,6 +562,96 @@ function sentenceMenu(e) {
   if (p !== null) synonymsAtCaret(anchor);
 }
 
+// ── clarity check on the draft: hard-to-read sentences, why, and clearer wording ───────────────
+const cview = $('cview');
+let clarityOn = false, cl = [];
+const undoStack = [];
+const post = (url, body) => fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+
+async function clarityCheck() {
+  const r = await post('/api/clarity', {text: draft.value});
+  cl = (await r.json()).sentences;
+  const t = draft.value;
+  let html = '', p = 0;
+  cl.forEach((x, k) => {
+    html += esc(t.slice(p, x.start)) + `<span class="cl ${x.flagged ? 'flag' : 'hint'}" data-c="${k}">${esc(t.slice(x.start, x.end))}</span>`;
+    p = x.end;
+  });
+  cview.innerHTML = html + esc(t.slice(p));
+  const n = cl.filter(x => x.flagged).length;
+  $('ccount').textContent = n ? `${n} hard to read` : '';
+  return n;
+}
+
+async function setClarity(on) {
+  if (on === clarityOn || (on && !draft.value.trim())) return;
+  pop.hidden = true;
+  if (on) {
+    const n = await clarityCheck();
+    setStatus(n ? `Clarity: ${n} hard-to-read sentence(s) in red, milder ones in amber. Click one to see why and get clearer wording.`
+                : 'Clarity: no hard-to-read sentences found.' + (cl.length ? ' A few mild hints are in amber.' : ''));
+  } else $('ccount').textContent = '';
+  clarityOn = on;
+  draft.hidden = on; cview.hidden = !on;
+  $('clbtn').textContent = on ? 'Back to editing' : 'Clarity';
+  $('clbtn').classList.toggle('primary', on);
+  if (!on) draft.focus();
+}
+$('clbtn').onclick = () => setClarity(!clarityOn);
+
+cview.addEventListener('click', e => {
+  const el = e.target.closest('.cl');
+  if (!el) return;
+  const x = cl[+el.dataset.c];
+  $('pmsg').innerHTML = `<b>${x.flagged ? 'Why flagged?' : 'Could be clearer'}</b><ul>${x.reasons.map(r => `<li>${esc(r)}</li>`).join('')}</ul>`;
+  $('preps').innerHTML = '';
+  $('preps').append(btn('Suggest clearer wording', () => suggestFor(x, el, [])));
+  openPop(el); e.stopPropagation();
+});
+
+async function suggestFor(x, el, avoid) {
+  $('preps').innerHTML = '';
+  pop.querySelectorAll('.syn').forEach(b => b.remove());
+  const box = document.createElement('div');
+  box.className = 'syn'; box.textContent = 'Writing a clearer version…';
+  pop.append(box); placePop(el);
+  try {
+    const r = await post('/api/suggest', {text: draft.value, start: x.start, end: x.end, avoid});
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.statusText);
+    if (pop.hidden || !box.isConnected) return;
+    box.innerHTML = `<div class="syn-h">Suggested wording</div><div class="sug">${esc(d.text)}</div>`
+      + (d.warnings.length ? `<div class="sug-warn">Check: ${esc(d.warnings.join('; '))}</div>` : '')
+      + `<div class="syn-g">${esc(d.after)}</div>`;
+    const row = document.createElement('div');
+    row.className = 'syn-row';
+    row.append(btn('Update', () => applySuggestion(x, d.text), 'primary'),
+               btn('Try another', () => suggestFor(x, el, [...avoid, d.text])));
+    box.append(row); placePop(el);
+  } catch (err) {
+    box.textContent = 'Suggestion: ' + err.message;
+  }
+}
+
+async function applySuggestion(x, text) {
+  undoStack.push(draft.value);
+  $('cundo').hidden = false;
+  draft.value = draft.value.slice(0, x.start) + text + draft.value.slice(x.end);
+  draft.dispatchEvent(new Event('input'));   // saves the draft and updates the word count
+  pop.hidden = true;
+  const n = await clarityCheck();
+  setStatus(`Updated the draft · ${n} hard-to-read sentence(s) left. Back to editing to keep writing.`);
+}
+
+$('cundo').onclick = async () => {
+  if (!undoStack.length) return;
+  draft.value = undoStack.pop();
+  draft.dispatchEvent(new Event('input'));
+  $('cundo').hidden = !undoStack.length;
+  if (clarityOn) await clarityCheck();
+  setStatus('Undid the last update.');
+};
+
 // ── thesaurus for the clicked word ───────────────────────────────────────────────────────────
 function wordAt(p) {
   const isW = c => c !== undefined && /[\p{L}\p{N}'’-]/u.test(c);
@@ -613,6 +709,7 @@ function tick() { setStatus(progress + ' · ' + ((Date.now() - t0) / 1000).toFix
 
 async function run() {
   setEditing(false);
+  await setClarity(false);
   const text = draft.value;
   if (!text.trim()) return;
   ctrl = new AbortController();
@@ -700,6 +797,7 @@ $('file').onchange = async e => {
     if (!r.ok) return setStatus(d.error);
     text = d.text;
   } else text = await f.text();
+  await setClarity(false);
   draft.value = text; draft.dispatchEvent(new Event('input'));
   setStatus('Imported ' + f.name);
 };

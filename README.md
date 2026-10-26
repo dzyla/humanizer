@@ -2,6 +2,7 @@
 
 A local, two-panel web UI for the [humanizer](https://github.com/sgaofen/humanizer-local-model) rewrite model on Linux/WSL, with a grammar check so the rewrite is not only human-sounding but also correct.
 
+- **Clarity check on your draft.** Click **Clarity** above the draft: sentences that are hard to read turn red (milder ones amber). Click one to see why (too long, lists in parentheses, ideas chained with colons and semicolons, long comma lists) and **Suggest clearer wording**. A small local model (Qwen3-4B-Instruct) proposes a version that keeps your terms, spelling, symbols, numbers and command-line options; it is checked for dropped numbers, names and options. **Update** puts it into your draft, **Try another** asks for a different one, and **Undo update** takes it back.
 - **Draft on the left, rewrite on the right.** New wording is highlighted and replaced wording is struck through. Long drafts are rewritten piece by piece and fill in as they finish.
 - **The `hz` pipeline underneath.** Headings, code, tables and links are kept as they are. A piece is rewritten again if a number or link goes missing, it copies too much of the draft, or it comes back cut off.
 - **Grammar check with [LanguageTool](https://languagetool.org), running locally.** Your text never leaves the machine.
@@ -33,6 +34,10 @@ for f in humanizer-12b-Q4_K_M.gguf prompt_format.json; do
 done
 
 ./setup-languagetool.sh          # optional: grammar check (~250 MB into tools/)
+
+# optional: clarity suggestions (2.5 GB; on the GPU when ~4 GB is free, otherwise on the CPU)
+mkdir -p clarity-model && curl -L -o clarity-model/Qwen3-4B-Instruct-2507-Q4_K_M.gguf \
+  https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf
 ```
 
 If `llama-server` is not on your `PATH`, set `LLAMA_SERVER=/path/to/llama-server`.
@@ -56,6 +61,7 @@ Command line, without the UI:
 |---|---|---|
 | `start-server.sh` | llama-server with the model | 8085 (`HUMANIZER_PORT`) |
 | `start-languagetool.sh` | LanguageTool | 8081 (`LANGUAGETOOL_PORT`) |
+| `start-clarity.sh` | the clarity model (suggested wording) | 8087 (`CLARITY_PORT`; `CLARITY_NGL=0` forces the CPU) |
 | `humanize-ui.sh` | both of the above if needed, then the UI | 8086 (`HUMANIZER_UI_PORT`) |
 
 Other settings:
@@ -67,4 +73,6 @@ Other settings:
 ## Credits
 
 - Model and `hz` pipeline: [sgaofen/humanizer-local-model](https://github.com/sgaofen/humanizer-local-model) (Apache-2.0), weights at [jialinyyzz/humanizer](https://huggingface.co/jialinyyzz/humanizer).
+- Clarity suggestions: [Qwen3-4B-Instruct-2507](https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507) (Apache-2.0), GGUF from [unsloth](https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF).
+- Thesaurus: [WordNet](https://wordnet.princeton.edu/) via NLTK, inflection with lemminflect.
 - Grammar check: [LanguageTool](https://github.com/languagetool-org/languagetool) (LGPL-2.1), downloaded by `setup-languagetool.sh` and not included in this repository.

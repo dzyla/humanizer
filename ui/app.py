@@ -206,7 +206,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, f.read(), "text/html; charset=utf-8")
         elif self.path == "/api/health":
             self._send(200, {"server": ARGS.server, "up": server_up(ARGS.server), "busy": LOCK.locked(),
-                             "lt": ARGS.lt, "lt_up": lt_up()})
+                             "lt": ARGS.lt, "lt_up": lt_up(), "clarity_up": server_up(ARGS.clarity)})
         else:
             self._send(404, {"error": "not found"})
 
@@ -220,6 +220,12 @@ class Handler(BaseHTTPRequestHandler):
             self._rewrite()
         elif self.path == "/api/redo":
             self._redo()
+        elif self.path == "/api/clarity":
+            import clarity
+            d = json.loads(self._body() or b"{}")
+            self._send(200, {"sentences": clarity.check(d.get("text", ""))})
+        elif self.path == "/api/suggest":
+            self._suggest()
         elif self.path == "/api/synonyms":
             try:
                 d = json.loads(self._body() or b"{}")
@@ -262,6 +268,41 @@ class Handler(BaseHTTPRequestHandler):
             pass   # the page pressed Stop or was closed; stop between pieces
         finally:
             LOCK.release()
+
+    def _suggest(self):
+        """Clearer wording for text[start:end] from the clarity model, checked like a rewrite."""
+        import clarity
+        try:
+            d = json.loads(self._body() or b"{}")
+            text, a, b = d["text"], int(d["start"]), int(d["end"])
+        except (ValueError, KeyError):
+            return self._send(400, {"error": "bad request"})
+        sentence = text[a:b]
+        try:
+            new = clarity.suggest(ARGS.clarity, sentence, clarity.paragraph_of(text, a, b),
+                                  clarity.reasons(sentence)[1], d.get("avoid") or [])
+        except Exception as e:
+            return self._send(503, {"error": f"the clarity model at {ARGS.clarity} is not answering ({e}); "
+                                             "start it with ./start-clarity.sh"})
+        for i in sorted(symbol_issues(new, sentence), key=lambda i: -i["offset"]):   # −, ′, β back as in the draft
+            new = new[:i["offset"]] + i["replacements"][0] + new[i["offset"] + i["length"]:]
+        c = T.check(sentence, new)
+        warn = []
+        if c.missing_numbers:
+            warn.append("numbers missing: " + ", ".join(c.missing_numbers))
+        if c.added_numbers:
+            warn.append("numbers not in the draft: " + ", ".join(c.added_numbers))
+        if c.missing_urls:
+            warn.append("links missing: " + ", ".join(c.missing_urls))
+        for name in missing_names(sentence, new):
+            warn.append(f"name missing: {name}")
+        for opt in clarity.missing_options(sentence, new):
+            warn.append(f"option missing: {opt}")
+        parts = [new[x:y] for x, y in clarity.sentences(new, 0, len(new))]
+        longest = max((T.count_words(p) for p in parts), default=0)
+        self._send(200, {"text": new, "warnings": warn,
+                         "after": f"{len(parts)} sentence{'s' if len(parts) != 1 else ''}, longest {longest} words "
+                                  f"(was {T.count_words(sentence)})"})
 
     def _redo(self):
         """Rewrite a few sentences again: one JSON answer, no streaming."""
@@ -338,6 +379,8 @@ def main():
                     help="LanguageTool language, e.g. en-US, en-GB or auto")
     ap.add_argument("--lt-variant", default=os.environ.get("LANGUAGETOOL_VARIANT", "en-US"),
                     help="spelling variant when the language is auto: en-US or en-GB")
+    ap.add_argument("--clarity", default=f"http://127.0.0.1:{os.environ.get('CLARITY_PORT', 8087)}",
+                    help="clarity model server (start-clarity.sh) for suggested wording")
     ap.add_argument("--retries", type=int, default=1, help="extra tries for a piece with a problem (as hz)")
     ARGS = ap.parse_args()
     httpd = ThreadingHTTPServer(("127.0.0.1", ARGS.port), Handler)
