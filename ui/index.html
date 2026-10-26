@@ -44,6 +44,9 @@
   del { color: var(--del-ink); opacity: .75; }
   #out.clean del { display: none; }
   #out.clean ins { background: none; color: inherit; }
+  .minor { text-decoration: underline dotted var(--ins-ink); text-underline-offset: 3px; cursor: pointer; }
+  #out.clean .minor { text-decoration: none; }
+  ins, del { cursor: pointer; }
   .gfix { background: var(--fix-bg); color: var(--fix-ink); border-bottom: 2px solid var(--fix-ink); border-radius: 2px; cursor: pointer; }
   del.gfix { text-decoration: line-through; opacity: .8; }
   #out.clean .gfix { background: none; color: inherit; border: 0; }
@@ -135,7 +138,8 @@ function diffMarks(a, b) {
   const toks = [...b.matchAll(/\s*(\S+)/g)];
   const B = toks.map(t => t[1]);
   const n = A.length, m = B.length;
-  if (!n || !m || n * m > 4e7) return {insAt, dels};
+  const hunks = [], hunkAt = new Int32Array(b.length).fill(-1);
+  if (!n || !m || n * m > 4e7) return {insAt, dels, hunks, hunkAt};
   const na = A.map(norm), nb = B.map(norm);
   // LCS lengths, suffix form, rolled into a direction table to walk forwards
   const dir = new Uint8Array((n + 1) * (m + 1));
@@ -148,20 +152,49 @@ function diffMarks(a, b) {
     }
     [next, cur] = [cur, next];
   }
-  let i = 0, j = 0, pend = [], prevIns = false;
-  const putDel = p => { if (pend.length) { dels.set(p, pend.join(' ')); pend = []; } };
+  // a hunk is everything between two unchanged words: the rewrite's new words [start, end) and the
+  // draft words they replaced (dels); a hunk with no new words marks where draft words were dropped
+  const SENT_END = /[.!?…]["'”’)\]]*$/;
+  let i = 0, j = 0, pend = [], prevIns = false, h = null;
+  const open = p => h || (hunks.push(h = {id: hunks.length, start: p, end: p, ins: false, dels: []}), h);
+  const addDel = (p, ws) => {
+    open(p).dels.push(...ws);
+    (dels.get(p) || dels.set(p, []).get(p)).push({text: ws.join(' '), h: h.id});
+  };
+  // dropped draft words before the rewrite token at p (word: where its text starts). Where the rewrite
+  // starts a new sentence, the dropped words up to the last full stop belong to the sentence before.
+  const putDel = (p, word, newSentence) => {
+    if (!pend.length) return;
+    let k = -1;
+    if (newSentence) for (let q = pend.length - 1; q >= 0; q--) if (SENT_END.test(pend[q])) { k = q; break; }
+    if (k >= 0) { addDel(p, pend.slice(0, k + 1)); h = null; }
+    if (k + 1 < pend.length) addDel(k >= 0 ? word : p, pend.slice(k + 1));
+    pend = [];
+  };
   while (j < m) {
     const d = i < n ? dir[i * (m + 1) + j] : 2;
     if (d === 1) { pend.push(A[i++]); prevIns = false; continue; }
-    const t = toks[j], word = t.index + t[0].length - t[1].length;
-    putDel(t.index);
-    if (d === 0) { i++; prevIns = false; }
-    else { insAt.fill(1, prevIns ? t.index : word, t.index + t[0].length); prevIns = true; }
+    const t = toks[j], word = t.index + t[0].length - t[1].length, end = t.index + t[0].length;
+    putDel(t.index, word, j === 0 || t[0].slice(0, word - t.index).includes('\n') || SENT_END.test(B[j - 1]));
+    if (d === 0 && A[i] === B[j]) { i++; prevIns = false; h = null; }
+    else if (d === 0) {   // same word, other case or punctuation: a small change of its own
+      h = null;
+      hunks.push({id: hunks.length, start: word, end, ins: true, dels: [A[i]], minor: true});
+      hunkAt.fill(hunks.length - 1, word, end);
+      i++; prevIns = false;
+    } else {
+      const hk = open(word);
+      if (!hk.ins) { hk.ins = true; hk.start = word; }
+      hk.end = end;
+      const from = prevIns ? t.index : word;
+      insAt.fill(1, from, end); hunkAt.fill(hk.id, from, end);
+      prevIns = true;
+    }
     j++;
   }
   while (i < n) pend.push(A[i++]);
-  putDel(b.length);
-  return {insAt, dels};
+  putDel(b.length, b.length, true);
+  return {insAt, dels, hunks, hunkAt};
 }
 
 const fixTitle = f => `${f.from || '(nothing)'} → ${f.to || '(deleted)'}`;
@@ -170,7 +203,8 @@ const fixTitle = f => `${f.from || '(nothing)'} → ${f.to || '(deleted)'}`;
 // <span class="gfix"> (blue), open grammar suggestions <mark class="gi"> (wavy underline), sentences
 // rewritten again <span class="redo">. Every run of rewrite text sits in <span data-s="offset">.
 function renderOut(a, b, list, fx = [], rd = []) {
-  const {insAt, dels} = diffMarks(a, b);
+  const {insAt, dels, hunks: hk, hunkAt} = diffMarks(a, b);
+  hunks = hk;
   const iss = new Int32Array(b.length).fill(-1), fix = new Int32Array(b.length).fill(-1);
   const red = new Int32Array(b.length).fill(-1);
   list.forEach((x, k) => iss.fill(k, x.offset, x.offset + x.length));
@@ -182,7 +216,8 @@ function renderOut(a, b, list, fx = [], rd = []) {
     if (e <= s) return;
     let t = `<span data-s="${s}">${esc(b.slice(s, e))}</span>`;
     if (fix[s] >= 0) t = `<span class="gfix" data-f="${fix[s]}" title="${esc(fixTitle(fx[fix[s]]))}">${t}</span>`;
-    else if (insAt[s]) t = '<ins>' + t + '</ins>';
+    else if (insAt[s]) t = `<ins data-h="${hunkAt[s]}">${t}</ins>`;
+    else if (hunkAt[s] >= 0) t = `<span class="minor" data-h="${hunkAt[s]}" title="Draft: ${esc(hk[hunkAt[s]].dels[0])}">${t}</span>`;
     if (iss[s] >= 0) t = `<mark class="gi${list[iss[s]].category === 'TYPOS' ? ' sp' : ''}" data-i="${iss[s]}">${t}</mark>`;
     if (red[s] >= 0) t = `<span class="redo" data-r="${red[s]}">${t}</span>`;
     html += t; s = e;
@@ -190,7 +225,7 @@ function renderOut(a, b, list, fx = [], rd = []) {
   for (let p = 0; p <= b.length; p++) {
     if (dels.has(p)) {   // dropped words go before the next rewrite word, with a space on each side
       run(p);
-      html += (p && !/\s/.test(b[p - 1]) ? ' ' : '') + '<del>' + esc(dels.get(p)) + '</del>'
+      html += (p && !/\s/.test(b[p - 1]) ? ' ' : '') + dels.get(p).map(x => `<del data-h="${x.h}">${esc(x.text)}</del>`).join(' ')
               + (p < b.length && !/\s/.test(b[p]) ? ' ' : '');
     }
     if (gone.has(p)) {
@@ -199,7 +234,7 @@ function renderOut(a, b, list, fx = [], rd = []) {
       html += `<del class="gfix" data-f="${k}" title="${esc(fixTitle(fx[k]))}">${esc(fx[k].from)}</del>`;
     }
     if (p === b.length) run(p);
-    else if (p > s && (insAt[p] !== insAt[s] || iss[p] !== iss[s] || fix[p] !== fix[s] || red[p] !== red[s])) run(p);
+    else if (p > s && (insAt[p] !== insAt[s] || iss[p] !== iss[s] || fix[p] !== fix[s] || red[p] !== red[s] || hunkAt[p] !== hunkAt[s])) run(p);
   }
   return html;
 }
@@ -214,6 +249,7 @@ function show(text, pending) {
 
 // ── grammar (LanguageTool) ─────────────────────────────────────────────────────────────────
 let issues = [], fixes = [];
+let hunks = [];             // changes against the draft, from the last render (see diffMarks)
 let redos = [];             // {offset, length, prev}: sentences rewritten again; prev is the text before the first redo
 const ignored = new Set();  // "rule|text" of undone corrections and ignored suggestions: never applied again
 const keyOf = x => x.rule + '|' + rewrite.slice(x.offset, x.offset + x.length);
@@ -306,6 +342,24 @@ async function redoRange(s, e) {
     $('go').disabled = false;
   }
 }
+
+// Put the draft's words back for one change: replace the new words with the draft words they
+// replaced, put back dropped words, or remove added ones.
+function revertHunk(hk) {
+  const t = hk.dels.join(' ');
+  if (hk.ins && t) return edit(hk.start, hk.end - hk.start, t);
+  if (hk.ins) {   // added words only: remove them and one space next to them
+    let a = hk.start, b = hk.end;
+    if (a > 0 && rewrite[a - 1] === ' ') a--; else if (rewrite[b] === ' ') b++;
+    return edit(a, b - a, '');
+  }
+  const p = hk.start;
+  edit(p, 0, (p > 0 && !/\s/.test(rewrite[p - 1]) ? ' ' : '') + t + (p < rewrite.length && !/\s/.test(rewrite[p]) ? ' ' : ''));
+}
+
+// every change touching rewrite[s, e), last first so earlier offsets stay valid
+const hunksIn = (s, e) => hunks.filter(h => h.ins ? h.start < e && h.end > s : h.start >= s && h.start <= e)
+                               .sort((x, y) => y.start - x.start);
 
 function revertRedo(k) {
   const r = redos[k];
@@ -416,6 +470,17 @@ out.addEventListener('click', e => {
     e.stopPropagation();
     return;
   }
+  const hel = e.target.closest('[data-h]');
+  if (hel && !e.target.closest('mark.gi') && hunks[+hel.dataset.h]) {   // a change against the draft
+    const hk = hunks[+hel.dataset.h], t = hk.dels.join(' ');
+    $('pmsg').innerHTML = !t ? '<b>Added by the rewrite</b> (not in the draft).'
+      : `<b>Draft wording:</b> “${esc(t.length > 200 ? t.slice(0, 200) + '…' : t)}”`;
+    $('preps').innerHTML = '';
+    $('preps').append(btn(t ? 'Restore draft wording' : 'Remove these words',
+                          () => { revertHunk(hk); pop.hidden = true; show(rewrite); showFixed(); }));
+    openPop(hel); e.stopPropagation();
+    return;
+  }
   const mk = e.target.closest('mark.gi');
   if (!mk) { sentenceMenu(e); return; }
   const k = +mk.dataset.i, x = issues[k];
@@ -471,6 +536,10 @@ function sentenceMenu(e) {
   $('pmsg').textContent = `“${t.length > 160 ? t.slice(0, 160) + '…' : t}”`;
   $('preps').innerHTML = '';
   $('preps').append(btn(n > 1 ? `Rewrite these ${n} sentences again` : 'Rewrite this sentence again', () => redoRange(s, en)));
+  const changed = hunksIn(s, en);
+  if (changed.length) $('preps').append(btn('Restore draft wording', () => {
+    changed.forEach(revertHunk); pop.hidden = true; show(rewrite); showFixed();
+  }, 'ghost'));
   openPop(e.target.closest('[data-s]') || out); e.stopPropagation();
 }
 document.addEventListener('click', e => { if (!pop.contains(e.target)) pop.hidden = true; });
@@ -527,7 +596,9 @@ function handle(ev) {
   } else if (ev.type === 'done') {
     rewrite = ev.text;
     $('flags').innerHTML = ev.flags.map(f =>
-      `<div><b>Line ${f.line}</b> (“${esc(f.start)}…”): ${esc(f.note)}</div>`).join('');
+      `<div><b>Line ${f.line}</b> (“${esc(f.start)}…”): ${esc(f.note)}</div>`).join('')
+      + (ev.names && ev.names.length ? `<div><b>Names from the draft missing in the rewrite:</b> ${esc(ev.names.join(', '))}`
+                                      + ' (click a change to restore the draft wording)</div>' : '');
     const finish = () => {
       show(rewrite, false); showFixed(); busy(false);
       setStatus(`Done in ${ev.seconds} s · ${ev.pieces} piece(s) · copies ${(ev.copy_rate * 100).toFixed(0)}% of the draft`

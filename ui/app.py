@@ -62,6 +62,30 @@ def draft_terms(draft):
     return terms
 
 
+# multi-word names such as "Plasmid Viewer & Map" or "Protein Data Bank"; hz checks numbers and links, not names
+_NAME = re.compile(r"[A-Z][\w-]*(?:\s+(?:(?:&|of|for)\s+)?[A-Z][\w-]*)+")
+_JOIN = ("&", "of", "for")
+
+
+def draft_names(draft):
+    names = []
+    for m in _NAME.finditer(draft):
+        words = m.group().split()
+        before = draft[:m.start()].rstrip()
+        if not before or before[-1] in ".!?:#":   # first word of a sentence is capitalized anyway
+            words = words[1:]
+        while words and words[0] in _JOIN:
+            words = words[1:]
+        if sum(w[0].isupper() for w in words) >= 2:
+            names.append(" ".join(words))
+    return list(dict.fromkeys(names))
+
+
+def missing_names(draft, out):
+    o = " ".join(out.split()).lower()
+    return [n for n in draft_names(draft) if n.lower() not in o]
+
+
 def science_words():
     """ui/science-words.txt, re-read on each check so edits apply without a restart."""
     try:
@@ -234,7 +258,8 @@ class Handler(BaseHTTPRequestHandler):
         self._emit({"type": "checking"})
         lt_ok, issues = grammar_check(final, text)
         self._emit({"type": "done", "text": final, "seconds": round(time.time() - t0, 1),
-                    "pieces": pieces, "flags": flags, "lt": lt_ok, "issues": issues, "copy_rate": copy})
+                    "pieces": pieces, "flags": flags, "lt": lt_ok, "issues": issues, "copy_rate": copy,
+                    "names": missing_names(text, final)})
 
 
 def rewrite_pieces(text, emit=lambda ev: None):
