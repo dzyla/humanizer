@@ -67,12 +67,17 @@
   mark.gi { background: none; color: inherit; cursor: pointer; text-decoration: underline wavy var(--gi); text-underline-offset: 3px; }
   mark.gi.sp { --gi: var(--sp); }
   .gcount { color: var(--gi); font-weight: 600; }
-  #pop { position: fixed; z-index: 10; max-width: 340px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  #pop { position: fixed; z-index: 10; max-width: 400px; max-height: 70vh; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
          padding: 10px 12px; box-shadow: 0 6px 24px rgba(0,0,0,.18); font-size: 14px; }
   #pop[hidden] { display: none; }
   #preps { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
   #preps button { padding: 3px 9px; font-weight: 600; }
   #preps button.ghost { font-weight: 400; color: var(--muted); }
+  .syn { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); font-size: 13px; }
+  .syn-h { font-weight: 600; margin-bottom: 2px; }
+  .syn-row { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+  .syn-g { flex-basis: 100%; color: var(--muted); font-style: italic; }
+  .syn-row button { padding: 1px 7px; font-size: 13px; }
   #flags div + div { margin-top: 4px; }
   footer { display: flex; gap: 16px; padding: 6px 16px 10px; font-size: 13px; color: var(--muted); flex-wrap: wrap; }
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-right: 6px; }
@@ -451,6 +456,10 @@ editBox.addEventListener('input', () => $('dout').textContent = words(editBox.va
 
 const pop = $('pop');
 function openPop(el) {
+  pop.querySelectorAll('.syn').forEach(x => x.remove());
+  placePop(el);
+}
+function placePop(el) {
   const r = el.getBoundingClientRect();
   pop.hidden = false;
   pop.style.left = Math.max(8, Math.min(r.left, innerWidth - pop.offsetWidth - 8)) + 'px';
@@ -479,6 +488,7 @@ out.addEventListener('click', e => {
     $('preps').append(btn(t ? 'Restore draft wording' : 'Remove these words',
                           () => { revertHunk(hk); pop.hidden = true; show(rewrite); showFixed(); }));
     openPop(hel); e.stopPropagation();
+    if (hel.tagName !== 'DEL') synonymsAtCaret(hel);
     return;
   }
   const mk = e.target.closest('mark.gi');
@@ -526,8 +536,9 @@ function sentenceMenu(e) {
     openPop(rd); e.stopPropagation();
     return;
   }
+  let p = null;
   if (s === null) {
-    const p = sel.rangeCount ? posOf(sel.anchorNode, sel.anchorOffset) : null;
+    p = sel.rangeCount ? posOf(sel.anchorNode, sel.anchorOffset) : null;
     if (p === null) return;
     [s, en] = sentenceAt(p);
   }
@@ -540,7 +551,52 @@ function sentenceMenu(e) {
   if (changed.length) $('preps').append(btn('Restore draft wording', () => {
     changed.forEach(revertHunk); pop.hidden = true; show(rewrite); showFixed();
   }, 'ghost'));
-  openPop(e.target.closest('[data-s]') || out); e.stopPropagation();
+  const anchor = e.target.closest('[data-s]') || out;
+  openPop(anchor); e.stopPropagation();
+  if (p !== null) synonymsAtCaret(anchor);
+}
+
+// ── thesaurus for the clicked word ───────────────────────────────────────────────────────────
+function wordAt(p) {
+  const isW = c => c !== undefined && /[\p{L}\p{N}'’-]/u.test(c);
+  let a = p, b = p;
+  while (a > 0 && isW(rewrite[a - 1])) a--;
+  while (b < rewrite.length && isW(rewrite[b])) b++;
+  while (a < b && /['’-]/.test(rewrite[a])) a++;
+  while (b > a && /['’-]/.test(rewrite[b - 1])) b--;
+  return b > a && /\p{L}/u.test(rewrite.slice(a, b)) ? [a, b] : null;
+}
+
+function synonymsAtCaret(anchor) {
+  const sel = getSelection();
+  const p = sel.rangeCount && sel.isCollapsed ? posOf(sel.anchorNode, sel.anchorOffset) : null;
+  const w = p !== null && wordAt(p);
+  if (w) addSynonyms(w[0], w[1], rewrite.slice(...sentenceAt(p)), anchor);
+}
+
+async function addSynonyms(a, b, sentence, anchor) {
+  const word = rewrite.slice(a, b);
+  const box = document.createElement('div');
+  box.className = 'syn'; box.textContent = `Looking up “${word}”…`;
+  pop.append(box);
+  try {
+    const r = await fetch('/api/synonyms', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                            body: JSON.stringify({word, sentence})});
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.statusText);
+    if (pop.hidden || !box.isConnected || rewrite.slice(a, b) !== word) return;
+    box.innerHTML = d.senses.length ? `<div class="syn-h">Synonyms for “${esc(word)}”</div>` : `No synonyms for “${esc(word)}”.`;
+    for (const sn of d.senses) {
+      const row = document.createElement('div');
+      row.className = 'syn-row';
+      row.innerHTML = `<span class="syn-g">${esc(sn.pos ? sn.pos + ': ' : '')}${esc(sn.gloss)}</span>`;
+      for (const w of sn.words) row.append(btn(w, () => { edit(a, b - a, w); pop.hidden = true; show(rewrite); showFixed(); }));
+      box.append(row);
+    }
+    placePop(anchor);
+  } catch (err) {
+    box.textContent = 'Thesaurus: ' + err.message;
+  }
 }
 document.addEventListener('click', e => { if (!pop.contains(e.target)) pop.hidden = true; });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') pop.hidden = true; });

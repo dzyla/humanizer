@@ -86,6 +86,28 @@ def missing_names(draft, out):
     return [n for n in draft_names(draft) if n.lower() not in o]
 
 
+# symbols the model tends to flatten to ASCII: −115.0° → -115.0°, A′ → A', β-augmentation → beta-augmentation
+_FOLD = {"′": "'", "″": "''", "‴": "'''", "−": "-", "–": "-", "α": "alpha", "β": "beta", "γ": "gamma",
+         "δ": "delta", "ε": "epsilon", "κ": "kappa", "λ": "lambda", "μ": "mu", "µ": "u", "σ": "sigma", "ω": "omega",
+         "Δ": "Delta", "Å": "A", "×": "x", "±": "+/-", "≤": "<=", "≥": ">="}
+_SYMBOL_TOKEN = re.compile(r"[^\s,;:()\[\]]*[" + "".join(_FOLD) + r"][^\s,;:()\[\]]*")
+
+
+def symbol_issues(text, draft):
+    """Places where the rewrite has the ASCII form of a symbol-bearing token from the draft."""
+    issues, seen = [], set()
+    for tok in _SYMBOL_TOKEN.findall(draft):
+        tok = tok.rstrip(".")
+        flat = "".join(_FOLD.get(c, c) for c in tok)
+        if flat == tok or flat in seen or (flat.isalpha() and len(flat) <= 2):
+            continue
+        seen.add(flat)
+        for m in re.finditer(r"(?<![\w'-])" + re.escape(flat) + r"(?![\w'])", text):
+            issues.append({"offset": m.start(), "length": len(flat), "rule": "DRAFT_SYMBOL", "category": "DRAFT_CASING",
+                           "message": f"Written “{tok}” in the draft.", "replacements": [tok], "auto": True})
+    return issues
+
+
 def science_words():
     """ui/science-words.txt, re-read on each check so edits apply without a restart."""
     try:
@@ -106,6 +128,9 @@ def grammar_check(text, draft):
             issues.append({"offset": m.start(), "length": len(m.group()), "rule": "DRAFT_CASING",
                            "category": "DRAFT_CASING", "message": f"Written “{want}” in the draft.",
                            "replacements": [want], "auto": True})
+    taken = [(i["offset"], i["offset"] + i["length"]) for i in issues]
+    issues += [i for i in symbol_issues(text, draft)
+               if not any(i["offset"] < e and s < i["offset"] + i["length"] for s, e in taken)]
     # LanguageTool does not flag a prose line that just stops; the model writes those often
     draft_lines = {l.strip() for l in draft.splitlines()}
     for m in re.finditer(r"[^\n]+", text):
@@ -195,6 +220,15 @@ class Handler(BaseHTTPRequestHandler):
             self._rewrite()
         elif self.path == "/api/redo":
             self._redo()
+        elif self.path == "/api/synonyms":
+            try:
+                d = json.loads(self._body() or b"{}")
+                import thesaurus   # needs nltk and lemminflect (requirements.txt)
+                self._send(200, {"senses": thesaurus.synonyms(d.get("word", ""), d.get("sentence", ""))})
+            except ImportError:
+                self._send(501, {"error": "the thesaurus needs nltk and lemminflect: .venv/bin/pip install -r requirements.txt"})
+            except Exception as e:
+                self._send(500, {"error": f"thesaurus: {e}"})
         elif self.path == "/api/check":
             try:
                 d = json.loads(self._body() or b"{}")
